@@ -5,7 +5,7 @@ import argparse
 import os
 import sys
 import bilby
-import psrchive
+
 
 def get_input_arguments(parser):
     parser.add_argument("-a", dest="archive", type=str, default=None, 
@@ -108,7 +108,7 @@ class RMLikelihood(bilby.likelihood.Likelihood):
         return ln_l
 
 
-def fit_rotation_measure(archive, outdir, label, nchan, nbin, window):
+def fit_rotation_measure_psrchive(archive, outdir, label, nchan, nbin, window):
     """ Runs the rotation measure fitting routine. """
 
     # Extract the on-pulse data from the archive 
@@ -151,8 +151,76 @@ def fit_rotation_measure(archive, outdir, label, nchan, nbin, window):
     print("RM = {0} +{1}/-{2} rad/m^2 (68% CI)".format(rm, rm_upp, rm_low))
 
 
+def fit_rotation_measure(data, freq, freq_cen, outdir, label, window):
+    """ Runs the rotation measure fitting routine without psrchive.
+
+    Parameters
+    ----------
+    data: array_like
+        three-dimensional array with shape (3, number of freq. channels,
+        number of time bins). The first axis goes along Stokes I, Q, U.
+    freq: array_like
+        corresponding frequencies the data covers (MHz)
+    freq_cen: float
+        centre frequency of the data (MHz)
+    outdir: string
+        directory to save data to
+    label: string
+        label for this data
+    window: array_like
+        the beginning and end of the window to access in the data
+
+    Returns
+    -------
+    rm, rm_upp, rm_low: float
+        Best-fit rotation measure and bounds (rad/m^2). The 68%
+        confidence interval is (rm-rm_low, rm+rm_upp)
+    """
+
+    # Extract the on-pulse data
+    on_pulse = np.mean(data[:,:,window[0]:window[1]], axis=2)
+
+    # Extract Stokes I and find bad frequency channels
+    Stokes_I = on_pulse[0,:]
+    zeroed_chans = np.argwhere(Stokes_I <= 0.0)
+
+    # Extract Stokes Q & U
+    Stokes_Q = np.delete(on_pulse[1,:], zeroed_chans)
+    Stokes_U = np.delete(on_pulse[2,:], zeroed_chans)
+
+    # Get channel frequencies and centre frequency
+    freq = np.delete(freq, zeroed_chans)
+
+    # Set bilby priors
+    priors = dict()
+    priors["rm"] = bilby.core.prior.Uniform(-2000, 2000, r"RM (rad m$^{-2}$)")
+    priors["pa_zero"] = bilby.core.prior.Uniform(-np.pi/4, np.pi/4, r"$\Psi_{0}$ (deg)")
+    priors["sigma"] = bilby.core.prior.Uniform(0, 1e4, r"$\sigma$")
+
+    likelihood = RMLikelihood(Stokes_Q, Stokes_U, freq*1e6, freq_cen*1e6, fit_QU)
+
+    result = bilby.run_sampler(
+        likelihood=likelihood, priors=priors, sampler="dynesty",
+        nlive=1024, outdir=outdir, plot=False, label=label)
+
+    result.plot_corner(dpi=100)
+    plt.close()
+
+    posterior = result.posterior.rm
+    median, low_bound, upp_bound = get_median_and_bounds(posterior)
+    rm = median
+    rm_upp = upp_bound - median
+    rm_low = median - low_bound
+
+    print("RM = {0} +{1}/-{2} rad/m^2 (68% CI)".format(rm, rm_upp, rm_low))
+
+    return rm, rm_upp, rm_low
+
 # If run directly
 if __name__ == "__main__":
+    # import psrchive here so if only accessing the non-psrchive fitting
+    # function, psrchive isn't necessary to run
+    import psrchive
 
     parser = argparse.ArgumentParser()
     args = get_input_arguments(parser)
